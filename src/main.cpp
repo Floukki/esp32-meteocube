@@ -13,17 +13,16 @@
 #include "config.h"
 
 TFT_eSPI tft = TFT_eSPI();
-// Универсальный буфер-спрайт 228x90 (~40 КБ RAM) для отрисовки всех блоков без мерцания и без чёрного экрана
+// Reusable 228x90 16-bit off-screen sprite (~41 KB RAM) to render all UI zones without flicker or black flashes
 TFT_eSprite panel = TFT_eSprite(&tft);
 bool panelReady = false;
 
-// Память RTC, которая НЕ сбрасывается при OTA-прошивке и программной перезагрузке,
-// чтобы устройство помнило, насколько оно уже прогрето!
+// RTC memory preserved across OTA updates and software resets so the device tracks cumulative warmup time
 RTC_NOINIT_ATTR uint32_t rtcMagic;
 RTC_NOINIT_ATTR uint32_t rtcWarmupSeconds;
 #define RTC_WARMUP_MAGIC 0xC0BE2026UL
 
-// ==================== Состояние данных ====================
+// ==================== Data State ====================
 struct WeatherData {
     bool valid = false;
     float temp = 0.0f;
@@ -49,9 +48,9 @@ struct RoomData {
 };
 
 enum ScreenMode {
-    SCREEN_DASHBOARD = 0, // Главный экран в стиле GeekMagic SmallTV (Часы + Погода + Комната)
-    SCREEN_WEATHER   = 1, // Детальный экран погоды
-    SCREEN_ROOM      = 2, // Детальный экран климата в комнате (SHT30)
+    SCREEN_DASHBOARD = 0, // Main GeekMagic SmallTV-inspired dashboard (Clock + Weather + Indoor)
+    SCREEN_WEATHER   = 1, // Detailed outdoor weather screen
+    SCREEN_ROOM      = 2, // Detailed indoor climate screen (SHT30)
     SCREEN_COUNT     = 3
 };
 
@@ -67,34 +66,34 @@ unsigned long lastUptimeTrackMs = 0;
 bool otaInitialized = false;
 bool otaInProgress = false;
 
-// ==================== Палитра GeekMagic SmallTV (RGB565) ====================
-#define C_BG        0x0000 // Чистый глубокий чёрный
-#define C_PANEL     0x10A3 // Тёмно-синяя подложка карточек (#101418)
-#define C_PANEL_2   0x1925 // Вторичная карточка (#182428)
-#define C_BORDER    0x29C7 // Тонкая рамка карточек
-#define C_CYAN      0x07FF // Неоновый голубой
-#define C_SKY       0x3DDF // Мягкий голубой
-#define C_ORANGE    0xFD20 // Фирменный оранжевый GeekMagic (#FFA500)
-#define C_AMBER     0xFE60 // Золотисто-жёлтый
-#define C_GREEN     0x07E8 // Неоновый зелёный
-#define C_MINT      0x27F3 // Мятный
-#define C_PINK      0xF993 // Розово-коралловый
-#define C_RED       0xF800 // Красный
-#define C_WHITE     0xFFFF // Белый
-#define C_GRAY      0x8430 // Серый текст
-#define C_DARKGRAY  0x3186 // Фон прогресс-баров
+// ==================== GeekMagic SmallTV Color Palette (RGB565) ====================
+#define C_BG        0x0000 // Deep pure black
+#define C_PANEL     0x10A3 // Dark slate card background (#101418)
+#define C_PANEL_2   0x1925 // Secondary card/badge surface (#182428)
+#define C_BORDER    0x29C7 // Subtle card border
+#define C_CYAN      0x07FF // Neon cyan
+#define C_SKY       0x3DDF // Soft sky blue
+#define C_ORANGE    0xFD20 // Signature GeekMagic orange (#FFA500)
+#define C_AMBER     0xFE60 // Warm amber
+#define C_GREEN     0x07E8 // Neon green
+#define C_MINT      0x27F3 // Mint green
+#define C_PINK      0xF993 // Coral pink
+#define C_RED       0xF800 // Red
+#define C_WHITE     0xFFFF // Pure white
+#define C_GRAY      0x8430 // Muted gray text
+#define C_DARKGRAY  0x3186 // Progress bar track
 
-// ==================== Кривая тепловой компенсации SHT30 (Вариант 2) ====================
+// ==================== SHT30 Dynamic Thermal Drift Compensation ====================
 float getCurrentTempOffset() {
     float warmupMin = (float)rtcWarmupSeconds / 60.0f;
     float tau = (SHT30_WARMUP_TAU_MIN > 0.1f) ? SHT30_WARMUP_TAU_MIN : 0.1f;
-    // Экспоненциальный прогрев: от SHT30_OFFSET_START (при t=0) до SHT30_OFFSET_WARM
+    // Exponential thermal warmup curve from SHT30_OFFSET_START (t=0) toward SHT30_OFFSET_WARM
     float factor = 1.0f - expf(-warmupMin / tau);
     return SHT30_OFFSET_START + (SHT30_OFFSET_WARM - SHT30_OFFSET_START) * factor;
 }
 
 float compensateHumidityMagnus(float rawTempC, float realTempC, float rawRh) {
-    // Давление насыщенного пара по формуле Магнуса
+    // Saturation vapor pressure via the Magnus formula
     float esRaw  = 6.112f * expf((17.62f * rawTempC)  / (243.12f + rawTempC));
     float esReal = 6.112f * expf((17.62f * realTempC) / (243.12f + realTempC));
     if (esReal <= 0.01f) return rawRh;
@@ -104,7 +103,7 @@ float compensateHumidityMagnus(float rawTempC, float realTempC, float rawRh) {
     return realRh;
 }
 
-// ==================== SHT30 (I2C с проверкой нагревателя) ====================
+// ==================== SHT30 (I2C with Internal Heater Verification) ====================
 static uint8_t sht30Crc8(const uint8_t *data, int len) {
     uint8_t crc = 0xFF;
     for (int j = len; j > 0; --j) {
@@ -220,7 +219,7 @@ void updateSHT30() {
                   (unsigned long)rtcWarmupSeconds);
 }
 
-// ==================== Погода (Open-Meteo + ArduinoJson v7) ====================
+// ==================== Weather (Open-Meteo + ArduinoJson v7) ====================
 const char* weatherCodeToText(int code) {
     switch (code) {
         case 0: return "CLEAR SKY";
@@ -286,7 +285,7 @@ void updateWeather() {
     http.end();
 }
 
-// ==================== Рисование примитивов и иконок на любом canvas (TFT_eSPI / TFT_eSprite) ====================
+// ==================== UI Primitives & Vector Icons (Supports Both TFT_eSPI and TFT_eSprite) ====================
 
 void drawProgressBarOn(TFT_eSPI &g, int x, int y, int w, int h, int percent, uint16_t fillColor) {
     if (percent < 0) percent = 0;
@@ -386,7 +385,7 @@ void drawWeatherIconOn(TFT_eSPI &g, int cx, int cy, int code, bool large) {
     }
 }
 
-// Нижний индикатор страниц (228x12 в координатах (6, 226))
+// Bottom page indicator bar (228x12 at screen coordinates (6, 226))
 void renderFooterIndicator(int activePage) {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
@@ -410,7 +409,7 @@ void renderFooterIndicator(int activePage) {
     }
 }
 
-// ==================== Отрисовка среднего блока главного экрана (Часы + Дата, 228x86 в (6, 42)) ====================
+// ==================== Dashboard Middle Block (Clock + Date/IP Bar, 228x86 at (6, 42)) ====================
 void renderHeroClockBlock() {
     struct tm timeinfo;
     bool hasTime = getLocalTime(&timeinfo, 5);
@@ -439,25 +438,25 @@ void renderHeroClockBlock() {
     int ox = panelReady ? 0 : 6;
     int oy = panelReady ? 0 : 42;
 
-    // Собираем весь блок 228x86 в памяти спрайта — никакого мигания!
+    // Compose the entire 228x86 region in sprite RAM before pushing to eliminate flicker
     g.fillRect(ox, oy, 228, 86, C_BG);
 
-    // Часы (белые)
+    // Hours (white)
     g.setTextDatum(MR_DATUM);
     g.setTextColor(C_WHITE, C_BG);
     g.drawString(hhStr, ox + 88, oy + 31, 7);
 
-    // Двоеточие
+    // Blinking colon
     uint16_t colonCol = blinkOn ? C_CYAN : C_DARKGRAY;
     g.fillCircle(ox + 96, oy + 19, 3, colonCol);
     g.fillCircle(ox + 96, oy + 41, 3, colonCol);
 
-    // Минуты (оранжевые GeekMagic)
+    // Minutes (signature GeekMagic orange)
     g.setTextDatum(ML_DATUM);
     g.setTextColor(C_ORANGE, C_BG);
     g.drawString(mmStr, ox + 104, oy + 31, 7);
 
-    // Бейдж дня недели + секунды справа
+    // Weekday badge and seconds on the right
     g.fillRoundRect(ox + 176, oy + 4, 48, 20, 5, C_PANEL_2);
     g.setTextDatum(MC_DATUM);
     g.setTextColor(C_CYAN, C_PANEL_2);
@@ -467,7 +466,7 @@ void renderHeroClockBlock() {
     g.setTextColor(C_AMBER, C_BG);
     g.drawString(ssStr, ox + 200, oy + 44, 4);
 
-    // Полоска даты и IP-адреса внизу блока (y = 64..86)
+    // Date and local IP bar at the bottom of the clock block (y = 64..86)
     g.fillRoundRect(ox, oy + 64, 228, 22, 6, C_PANEL);
     g.setTextDatum(ML_DATUM);
     g.setTextColor(C_WHITE, C_PANEL);
@@ -487,7 +486,7 @@ void renderHeroClockBlock() {
     }
 }
 
-// ==================== Отрисовка нижнего блока главного экрана (2 карточки, 228x90 в (6, 134)) ====================
+// ==================== Dashboard Bottom Cards (Room + Outdoor, 228x90 at (6, 134)) ====================
 void renderDashboardBottomCards() {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
@@ -495,7 +494,7 @@ void renderDashboardBottomCards() {
 
     g.fillRect(ox, oy, 228, 90, C_BG);
 
-    // Левая карточка: ROOM (SHT30)
+    // Left card: ROOM (SHT30)
     g.fillRoundRect(ox, oy + 2, 111, 86, 10, C_PANEL);
     g.drawRoundRect(ox, oy + 2, 111, 86, 10, C_BORDER);
     g.fillRoundRect(ox + 8, oy + 8, 50, 14, 4, 0x0320);
@@ -533,7 +532,7 @@ void renderDashboardBottomCards() {
         g.drawString("GPIO 21/22/25", ox + 55, oy + 62, 1);
     }
 
-    // Правая карточка: OUTDOOR (Погода)
+    // Right card: OUTDOOR (Weather)
     g.fillRoundRect(ox + 117, oy + 2, 111, 86, 10, C_PANEL);
     g.drawRoundRect(ox + 117, oy + 2, 111, 86, 10, C_BORDER);
     g.fillRoundRect(ox + 125, oy + 8, 62, 14, 4, 0x0210);
@@ -569,13 +568,13 @@ void renderDashboardBottomCards() {
     }
 }
 
-// ==================== ЭКРАН 1: Главный дашборд GeekMagic SmallTV ====================
+// ==================== SCREEN 1: Main GeekMagic SmallTV Dashboard ====================
 void drawDashboardScreen() {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
     int oy = panelReady ? 0 : 6;
 
-    // 1. Верхняя шапка (228x30 в (6, 6))
+    // 1. Top header bar (228x30 at (6, 6))
     g.fillRect(ox, oy, 228, 30, C_BG);
     g.fillRoundRect(ox, oy, 228, 30, 8, C_PANEL);
     g.drawRoundRect(ox, oy, 228, 30, 8, C_BORDER);
@@ -603,22 +602,22 @@ void drawDashboardScreen() {
         panel.pushSprite(6, 6, 0, 0, 228, 30);
     }
 
-    // 2. Средний блок (Часы + Дата, 228x86 в (6, 42))
+    // 2. Middle block (Clock + Date/IP, 228x86 at (6, 42))
     renderHeroClockBlock();
 
-    // 3. Нижний блок (Карточки комнаты и улицы, 228x90 в (6, 134))
+    // 3. Bottom block (Room & Outdoor cards, 228x90 at (6, 134))
     renderDashboardBottomCards();
 
-    // 4. Индикатор страниц
+    // 4. Page indicator dots
     renderFooterIndicator(SCREEN_DASHBOARD);
 }
 
-// ==================== ЭКРАН 2: Детальная погода в стиле GeekMagic ====================
+// ==================== SCREEN 2: Detailed Weather ====================
 void drawWeatherScreen() {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
 
-    // 1. Верхняя шапка (228x30 в (6, 6))
+    // 1. Top header bar (228x30 at (6, 6))
     int oy = panelReady ? 0 : 6;
     g.fillRect(ox, oy, 228, 30, C_BG);
     g.fillRoundRect(ox, oy, 228, 30, 8, C_PANEL);
@@ -635,7 +634,7 @@ void drawWeatherScreen() {
         panel.pushSprite(6, 6, 0, 0, 228, 30);
     }
 
-    // 2. Средний блок (228x86 в (6, 42)): Иконка погоды + Крупная температура
+    // 2. Middle block (228x86 at (6, 42)): Large weather icon + current temperature
     oy = panelReady ? 0 : 42;
     g.fillRect(ox, oy, 228, 86, C_BG);
     g.fillRoundRect(ox, oy, 228, 86, 10, C_PANEL);
@@ -668,14 +667,14 @@ void drawWeatherScreen() {
         panel.pushSprite(6, 42, 0, 0, 228, 86);
     }
 
-    // 3. Нижний блок (228x90 в (6, 134)): 3 шкалы с прогресс-барами
+    // 3. Bottom block (228x90 at (6, 134)): Humidity, wind & pressure progress bars
     oy = panelReady ? 0 : 134;
     g.fillRect(ox, oy, 228, 90, C_BG);
     g.fillRoundRect(ox, oy, 228, 90, 10, C_PANEL);
     g.drawRoundRect(ox, oy, 228, 90, 10, C_BORDER);
 
     if (weather.valid) {
-        // Влажность
+        // Humidity
         g.setTextDatum(ML_DATUM);
         g.setTextColor(C_GRAY, C_PANEL);
         g.drawString("HUMIDITY", ox + 10, oy + 16, 2);
@@ -686,7 +685,7 @@ void drawWeatherScreen() {
         g.setTextColor(C_CYAN, C_PANEL);
         g.drawString(hStr, ox + 218, oy + 16, 2);
 
-        // Ветер
+        // Wind speed
         g.setTextDatum(ML_DATUM);
         g.setTextColor(C_GRAY, C_PANEL);
         g.drawString("WIND", ox + 10, oy + 44, 2);
@@ -698,7 +697,7 @@ void drawWeatherScreen() {
         g.setTextColor(C_GREEN, C_PANEL);
         g.drawString(wStr, ox + 218, oy + 44, 2);
 
-        // Давление
+        // Surface pressure (mmHg)
         g.setTextDatum(ML_DATUM);
         g.setTextColor(C_GRAY, C_PANEL);
         g.drawString("PRESSURE", ox + 10, oy + 72, 2);
@@ -721,12 +720,12 @@ void drawWeatherScreen() {
     renderFooterIndicator(SCREEN_WEATHER);
 }
 
-// ==================== ЭКРАН 3: Климат в комнате (SHT30) ====================
+// ==================== SCREEN 3: Indoor Climate (SHT30) ====================
 void drawRoomScreen() {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
 
-    // 1. Верхняя шапка (228x30 в (6, 6))
+    // 1. Top header bar (228x30 at (6, 6))
     int oy = panelReady ? 0 : 6;
     g.fillRect(ox, oy, 228, 30, C_BG);
     g.fillRoundRect(ox, oy, 228, 30, 8, C_PANEL);
@@ -751,7 +750,7 @@ void drawRoomScreen() {
         panel.pushSprite(6, 6, 0, 0, 228, 30);
     }
 
-    // 2. Средний блок (228x86 в (6, 42)): Карточка Температуры
+    // 2. Middle block (228x86 at (6, 42)): Room temperature card
     oy = panelReady ? 0 : 42;
     g.fillRect(ox, oy, 228, 86, C_BG);
     g.fillRoundRect(ox, oy, 228, 86, 10, C_PANEL);
@@ -796,7 +795,7 @@ void drawRoomScreen() {
         panel.pushSprite(6, 42, 0, 0, 228, 86);
     }
 
-    // 3. Нижний блок (228x90 в (6, 134)): Карточка Влажности
+    // 3. Bottom block (228x90 at (6, 134)): Relative humidity card
     oy = panelReady ? 0 : 134;
     g.fillRect(ox, oy, 228, 90, C_BG);
     g.fillRoundRect(ox, oy, 228, 90, 10, C_PANEL);
@@ -843,7 +842,7 @@ void drawRoomScreen() {
     renderFooterIndicator(SCREEN_ROOM);
 }
 
-// ==================== Отрисовка текущего экрана (БЕЗ fillScreen!) ====================
+// ==================== Screen Dispatcher (No fillScreen Calls) ====================
 void renderCurrentScreen() {
     if (otaInProgress) return;
     switch (currentScreen) {
@@ -861,7 +860,7 @@ void renderCurrentScreen() {
     }
 }
 
-// ==================== Настройка OTA (прошивка по Wi-Fi без кнопки BOOT) ====================
+// ==================== OTA Setup (Wi-Fi Firmware Updates Without BOOT Button) ====================
 void setupOTA() {
     if (otaInitialized || WiFi.status() != WL_CONNECTED) return;
 
@@ -917,11 +916,10 @@ void setupOTA() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== Cube GeekMagic UI + Thermal Comp + Zero-Flicker ===");
+    Serial.println("\n=== ESP32 MeteoCube + Thermal Comp + Zero-Flicker ===");
 
-    // Инициализация таймера прогрева в RTC-памяти:
-    // При холодном включении питания (ESP_RST_POWERON) начинаем с 0 сек,
-    // а при OTA-прошивке или софт-резете сохраняем накопленный прогрев!
+    // Initialize warmup timer in RTC memory: reset to 0s only on cold power-on,
+    // keeping accumulated thermal warmup time across OTA updates and soft resets.
     esp_reset_reason_t reason = esp_reset_reason();
     if (reason == ESP_RST_POWERON || rtcMagic != RTC_WARMUP_MAGIC || rtcWarmupSeconds > 864000UL) {
         rtcMagic = RTC_WARMUP_MAGIC;
@@ -931,15 +929,15 @@ void setup() {
         Serial.printf("Warm reboot detected -> keeping warmup timer at %lus\n", (unsigned long)rtcWarmupSeconds);
     }
 
-    // 1. Подача питания на SHT30 через GPIO25 перед запуском I2C
+    // 1. Power SHT30 VIN via GPIO25 before initializing the I2C bus
     pinMode(SHT30_VCC_PIN, OUTPUT);
     digitalWrite(SHT30_VCC_PIN, HIGH);
     delay(25);
 
-    // 2. Инициализация I2C для SHT30 (GPIO21 = SDA, GPIO22 = SCL)
+    // 2. Initialize I2C for SHT30 (GPIO21 = SDA, GPIO22 = SCL)
     Wire.begin(SHT30_SDA_PIN, SHT30_SCL_PIN);
 
-    // 3. Предварительная установка SCK=HIGH (SPI_MODE3) и сброс RES для ST7789 без CS
+    // 3. Force SCK=HIGH (SPI_MODE3) and pulse RES for CS-less ST7789 sync
     pinMode(TFT_SCLK, OUTPUT);
     digitalWrite(TFT_SCLK, HIGH);
     pinMode(TFT_MOSI, OUTPUT);
@@ -954,16 +952,16 @@ void setup() {
     delay(150);
     #endif
 
-    // 4. Инициализация дисплея ST7789 240x240
+    // 4. Initialize 240x240 ST7789 IPS display
     tft.init();
     tft.setRotation(DISPLAY_ROTATION);
 
-    // Выделяем универсальный буфер-спрайт 228x90 (~41 КБ RAM) для отрисовки всех панелей без мерцания
+    // Allocate reusable 228x90 16-bit sprite buffer (~41 KB RAM) for flicker-free zone updates
     panel.setColorDepth(16);
     panelReady = (panel.createSprite(228, 90) != nullptr);
     Serial.printf("Panel sprite 228x90: %s\n", panelReady ? "OK (Zero-Flicker enabled)" : "FAILED");
 
-    // 5. Стартовая заставка
+    // 5. Startup splash screen
     tft.fillScreen(C_BG);
     tft.fillRoundRect(16, 28, 208, 184, 14, C_PANEL);
     tft.drawRoundRect(16, 28, 208, 184, 14, C_BORDER);
@@ -979,7 +977,7 @@ void setup() {
     tft.drawString("Connecting Wi-Fi...", 120, 170, 2);
     drawProgressBarOn(tft, 36, 188, 168, 8, 15, C_CYAN);
 
-    // 6. Подключение к Wi-Fi
+    // 6. Connect to Wi-Fi
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(OTA_HOSTNAME);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -1014,8 +1012,8 @@ void setup() {
         delay(1000);
     }
 
-    // Очищаем экран ровно ОДИН раз перед выходом в рабочий цикл!
-    // Дальше все вкладки и обновления рисуются поверх через буфер panel (228x90) без единого fillScreen!
+    // Clear the screen exactly ONCE before entering the main loop;
+    // subsequent updates overwrite zones via the 228x90 panel sprite with zero black flashes.
     tft.fillScreen(C_BG);
 
     unsigned long now = millis();
@@ -1040,7 +1038,7 @@ void loop() {
 
     unsigned long now = millis();
 
-    // 1. Отслеживание времени прогрева (раз в 1 секунду)
+    // 1. Track cumulative thermal warmup uptime (once per second)
     if (now - lastUptimeTrackMs >= 1000) {
         uint32_t elapsedSec = (now - lastUptimeTrackMs) / 1000;
         lastUptimeTrackMs += elapsedSec * 1000;
@@ -1049,7 +1047,7 @@ void loop() {
         }
     }
 
-    // 2. Периодический опрос датчика SHT30 (раз в 10 секунд)
+    // 2. Poll SHT30 sensor (every 10 seconds)
     if (now - lastSensorUpdateMs >= SENSOR_UPDATE_INTERVAL_MS) {
         lastSensorUpdateMs = now;
         updateSHT30();
@@ -1060,7 +1058,7 @@ void loop() {
         }
     }
 
-    // 3. Периодическое обновление погоды (раз в 15 минут)
+    // 3. Refresh outdoor forecast (every 15 minutes)
     if (now - lastWeatherUpdateMs >= WEATHER_UPDATE_INTERVAL_MS) {
         lastWeatherUpdateMs = now;
         updateWeather();
@@ -1071,14 +1069,14 @@ void loop() {
         }
     }
 
-    // 4. Автоматическое переключение экранов (без fillScreen — мгновенная подмена блоков из буфера)
+    // 4. Auto-cycle active UI tab (flicker-free sprite block swap)
     if (now - lastScreenSwitchMs >= SCREEN_SWITCH_INTERVAL_MS) {
         lastScreenSwitchMs = now;
         currentScreen = static_cast<ScreenMode>((currentScreen + 1) % SCREEN_COUNT);
         renderCurrentScreen();
     }
 
-    // 5. Плавное обновление часов и двоеточия (раз в 500 мс) на главном экране
+    // 5. Update clock digits and blinking colon every 500 ms on the dashboard
     if (currentScreen == SCREEN_DASHBOARD && (now - lastClockTickMs >= 500)) {
         lastClockTickMs = now;
         renderHeroClockBlock();
