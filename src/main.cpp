@@ -48,7 +48,7 @@ struct RoomData {
 };
 
 enum ScreenMode {
-    SCREEN_DASHBOARD = 0, // Main GeekMagic SmallTV-inspired dashboard (Clock + Weather + Indoor)
+    SCREEN_DASHBOARD = 0, // Main MeteoCube dashboard (Clock + Weather + Indoor)
     SCREEN_WEATHER   = 1, // Detailed outdoor weather screen
     SCREEN_ROOM      = 2, // Detailed indoor climate screen (SHT30)
     SCREEN_COUNT     = 3
@@ -66,14 +66,14 @@ unsigned long lastUptimeTrackMs = 0;
 bool otaInitialized = false;
 bool otaInProgress = false;
 
-// ==================== GeekMagic SmallTV Color Palette (RGB565) ====================
+// ==================== MeteoCube UI Color Palette (RGB565) ====================
 #define C_BG        0x0000 // Deep pure black
 #define C_PANEL     0x10A3 // Dark slate card background (#101418)
 #define C_PANEL_2   0x1925 // Secondary card/badge surface (#182428)
 #define C_BORDER    0x29C7 // Subtle card border
 #define C_CYAN      0x07FF // Neon cyan
 #define C_SKY       0x3DDF // Soft sky blue
-#define C_ORANGE    0xFD20 // Signature GeekMagic orange (#FFA500)
+#define C_ORANGE    0xFD20 // Primary accent orange (#FFA500)
 #define C_AMBER     0xFE60 // Warm amber
 #define C_GREEN     0x07E8 // Neon green
 #define C_MINT      0x27F3 // Mint green
@@ -451,7 +451,7 @@ void renderHeroClockBlock() {
     g.fillCircle(ox + 96, oy + 19, 3, colonCol);
     g.fillCircle(ox + 96, oy + 41, 3, colonCol);
 
-    // Minutes (signature GeekMagic orange)
+    // Minutes (accent orange)
     g.setTextDatum(ML_DATUM);
     g.setTextColor(C_ORANGE, C_BG);
     g.drawString(mmStr, ox + 104, oy + 31, 7);
@@ -568,7 +568,7 @@ void renderDashboardBottomCards() {
     }
 }
 
-// ==================== SCREEN 1: Main GeekMagic SmallTV Dashboard ====================
+// ==================== SCREEN 1: Main MeteoCube Dashboard ====================
 void drawDashboardScreen() {
     TFT_eSPI &g = panelReady ? (TFT_eSPI &)panel : tft;
     int ox = panelReady ? 0 : 6;
@@ -969,9 +969,9 @@ void setup() {
     drawWeatherIconOn(tft, 120, 72, 2, true);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(C_WHITE, C_PANEL);
-    tft.drawString("GEEKMAGIC", 120, 118, 4);
+    tft.drawString("METEOCUBE", 120, 118, 4);
     tft.setTextColor(C_ORANGE, C_PANEL);
-    tft.drawString("CUBE STATION", 120, 142, 2);
+    tft.drawString("ESP32 STATION", 120, 142, 2);
 
     tft.setTextColor(C_GRAY, C_PANEL);
     tft.drawString("Connecting Wi-Fi...", 120, 170, 2);

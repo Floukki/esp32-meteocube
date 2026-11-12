@@ -1,6 +1,6 @@
 # ESP32 MeteoCube — Desk Clock, Weather & Indoor Climate Station
 
-A compact, 3D-printed ESP32 desk cube inspired by GeekMagic SmallTV, built around a 1.3" 240×240 IPS `ST7789` display and an `SHT30` I2C temperature/humidity sensor. Designed for 24/7 desktop operation with live [Open-Meteo](https://open-meteo.com/) weather, zero-flicker sprite rendering, dynamic self-heating compensation, and Wi-Fi Over-The-Air (`ArduinoOTA`) firmware updates.
+A compact, 3D-printed ESP32 MeteoCube desk station built around a 1.3" 240×240 IPS `ST7789` display and an `SHT30` I2C temperature/humidity sensor. Designed for 24/7 desktop operation with live [Open-Meteo](https://open-meteo.com/) weather, zero-flicker sprite rendering, dynamic self-heating compensation, and Wi-Fi Over-The-Air (`ArduinoOTA`) firmware updates.
 
 ![ESP32 MeteoCube in 3D-printed enclosure](docs/demo.jpg)
 
